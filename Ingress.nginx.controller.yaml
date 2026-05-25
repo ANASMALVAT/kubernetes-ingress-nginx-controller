@@ -1,0 +1,98 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kitchen-sink-nginx
+  annotations:
+    # ─────────────────────────────────────────────────────────────
+    # ① URL REWRITES & REGEX PATH MATCHING
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # ^ allow regex in the path: field below
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # ^ rewrite the URL before sending to the pod. $2 = the 2nd capture
+    #   group in the path regex. So /app/foo  →  pod sees /foo
+
+    # ─────────────────────────────────────────────────────────────
+    # ② RATE LIMITING  (per client IP)
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    # ^ max 10 requests/second per IP; excess gets HTTP 503
+    nginx.ingress.kubernetes.io/limit-connections: "5"
+    # ^ max 5 concurrent connections per IP
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    # ^ allow short bursts up to 10 x 3 = 30 rps before throttling
+
+    # ─────────────────────────────────────────────────────────────
+    # ③ TIMEOUTS & BUFFERING / BODY SIZE
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"   # secs to connect to pod
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"      # secs to send request
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"      # secs to wait for response
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"         # max upload size (else 413)
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"         # buffer pod responses
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"      # size of the buffer
+
+    # ─────────────────────────────────────────────────────────────
+    # ④ AUTHENTICATION — basic auth (uses the secret from Part 0)
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth        # the secret name
+    nginx.ingress.kubernetes.io/auth-realm: "Login required"   # popup message
+
+    # ─────────────────────────────────────────────────────────────
+    # ④b OAUTH / EXTERNAL AUTH  (commented — needs oauth2-proxy)
+    # ─────────────────────────────────────────────────────────────
+    # nginx.ingress.kubernetes.io/auth-url: "https://oauth.example.com/oauth2/auth"
+    # nginx.ingress.kubernetes.io/auth-signin: "https://oauth.example.com/oauth2/start?rd=$escaped_request_uri"
+
+    # ─────────────────────────────────────────────────────────────
+    # ⑤ CORS  (cross-origin browser requests)
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://example.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
+    # ─────────────────────────────────────────────────────────────
+    # ⑥ CUSTOM HEADERS  (⚠ snippets are OFF by default in recent versions)
+    # ─────────────────────────────────────────────────────────────
+    # Requires `allow-snippet-annotations: true` in the controller ConfigMap.
+    # nginx.ingress.kubernetes.io/configuration-snippet: |
+    #   more_set_headers "X-Custom-Header: my-value";
+    #   more_set_headers "X-Frame-Options: DENY";
+
+    # ─────────────────────────────────────────────────────────────
+    # ⑦ STICKY SESSIONS  (pin a client to one pod via cookie)
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "route"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"   # 2 days, in secs
+
+    # ─────────────────────────────────────────────────────────────
+    # ⑧ TLS / HTTPS BEHAVIOR
+    # ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"        # force HTTP → HTTPS
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"    # how nginx talks to the pod
+
+spec:
+  ingressClassName: nginx          # use the nginx controller (not gce)
+
+  # TLS block — terminates HTTPS at the nginx pod using a cert in a secret
+  tls:
+    - hosts:
+        - ingress-example-nginx.com
+      secretName: example-tls       # a kubernetes.io/tls secret (cert + key)
+
+  rules:
+    - host: "ingress-example-nginx.com"
+      http:
+        paths:
+          - path: /app(/|$)(.*)               # regex: group1=(/|$), group2=(.*)
+            pathType: ImplementationSpecific  # let nginx interpret the regex
+            backend:
+              service:
+                name: nginx-clusterip          # ClusterIP service (router is in-cluster)
+                port:
+                  number: 80
